@@ -194,7 +194,11 @@
             className="hidden"
           />
 
-          <div className="relative z-10 flex flex-col h-full pt-12 pb-28 px-5 max-w-md mx-auto">
+          {/* 自動適配 iPhone 動態島與狀態列高度 (Safe Area Inset Top) */}
+          <div 
+            className="relative z-10 flex flex-col h-full pb-28 px-5 max-w-md mx-auto"
+            style={{ paddingTop: 'calc(env(safe-area-inset-top, 48px) + 24px)' }}
+          >
             <header className="mb-6 flex items-center justify-between">
               <div>
                 <div className="flex items-center gap-1.5 text-xs font-medium text-blue-400/90 tracking-widest uppercase mb-1">
@@ -286,7 +290,11 @@
             </div>
           </div>
 
-          <div className="fixed bottom-6 inset-x-0 z-20 flex justify-center pointer-events-none">
+          {/* 底部懸浮膠囊列 (自動避開 iPhone Home Indicator) */}
+          <div 
+            className="fixed inset-x-0 z-20 flex justify-center pointer-events-none"
+            style={{ bottom: 'calc(env(safe-area-inset-bottom, 16px) + 12px)' }}
+          >
             <div className="pointer-events-auto flex items-center gap-2 px-3 py-2 rounded-full bg-white/10 backdrop-blur-3xl border border-white/20 shadow-[0_10px_40px_rgba(0,0,0,0.6)]">
               <button
                 onClick={() => fileInputRef.current?.click()}
@@ -306,7 +314,7 @@
 
           {showPasteModal && (
             <div className="fixed inset-0 z-40 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-md p-4 animate-fadeIn">
-              <div className="w-full max-w-md rounded-[36px] bg-[#12131a]/90 backdrop-blur-3xl border border-white/20 p-6 shadow-2xl">
+              <div className="w-full max-w-md rounded-[36px] bg-[#12131a]/90 backdrop-blur-3xl border border-white/20 p-6 shadow-2xl mb-4">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-lg font-bold text-white">貼上 HTML 原始碼</h2>
                   <button
@@ -332,7 +340,8 @@
                 />
                 <button
                   onClick={handlePasteSubmit}
-                  className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-blue-500 to-indigo-500 text-white font-semibold text-sm shadow-lg shadow-blue-500/25 active:scale-[0.98] transition-transform">
+                  className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-blue-500 to-indigo-500 text-white font-semibold text-sm shadow-lg shadow-blue-500/25 active:scale-[0.98] transition-transform"
+                >
                   立即渲染並儲存紀錄
                 </button>
               </div>
@@ -341,7 +350,10 @@
 
           {activeHtml && (
             <div className="fixed inset-0 z-50 bg-white flex flex-col animate-fadeIn">
-              <div className="fixed top-11 left-4 z-50">
+              <div 
+                className="fixed left-4 z-50"
+                style={{ top: 'calc(env(safe-area-inset-top, 44px) + 12px)' }}
+              >
                 <button
                   onClick={() => setActiveHtml(null)}
                   className="flex items-center gap-1.5 pl-3 pr-4 py-2 rounded-full bg-black/65 hover:bg-black/80 active:scale-95 text-white backdrop-blur-2xl border border-white/25 shadow-[0_4px_20px_rgba(0,0,0,0.4)] transition-all"
