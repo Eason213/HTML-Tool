@@ -14,7 +14,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <style>
-    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background-color: #050508; }
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background-color: #050508; color: #ffffff; }
     ::-webkit-scrollbar { width: 0px; background: transparent; }
     @keyframes fadeIn { from { opacity: 0; transform: scale(0.98); } to { opacity: 1; transform: scale(1); } }
     .animate-fadeIn { animation: fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
@@ -26,7 +26,7 @@
   <script type="text/babel">
     const { useState, useEffect, useRef } = React;
 
-    // --- IndexedDB 儲存引擎 (支援單檔與多檔案專案結構) ---
+    // --- IndexedDB 儲存引擎 ---
     const DB_NAME = 'iOS27_HTML_DB';
     const STORE_NAME = 'history';
 
@@ -60,11 +60,12 @@
         const tx = db.transaction(STORE_NAME, 'readonly');
         const request = tx.objectStore(STORE_NAME).getAll();
         request.onsuccess = () => {
-          // 自動相容舊版單一檔案紀錄，升級為多檔案陣列格式
-          const normalized = request.result.map(item => {
-            if (!item.files) {
+          const raw = request.result || [];
+          const normalized = raw.map(item => {
+            if (!item.files || !Array.isArray(item.files)) {
               return {
                 ...item,
+                category: item.category || '預設工具箱',
                 files: [{ name: item.fileName || 'index.html', content: item.content || '' }]
               };
             }
@@ -87,59 +88,60 @@
       });
     };
 
-    // --- 虛擬打包引擎：將專案內多個檔案 (.html, .css, .js, .json) 自動組裝成可執行的單一頁面 ---
+    // --- 零正則安全打包引擎：自動將專案內的 .html, .css, .js 組合成單一可執行畫面 ---
     const bundleProjectFiles = (project) => {
       const files = project.files || [];
       if (files.length === 0) {
-        return '<body style="background:#111;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;">專案內尚無檔案，請先新增 index.html</body>';
+        return '<div style="background:#111;color:#fff;padding:40px;text-align:center;font-family:sans-serif;">專案內尚無檔案，請點擊右下角「編輯檔案」新增程式碼</div>';
       }
 
-      // 優先尋找 index.html 或第一個 .html 檔作為入口
-      let entryFile = files.find(f => f.name.toLowerCase() === 'index.html') 
-                   || files.find(f => /\.html?$/i.test(f.name)) 
+      // 找出主 HTML 檔
+      let entryFile = files.find(f => f.name.toLowerCase() === 'index.html')
+                   || files.find(f => f.name.toLowerCase().endsWith('.html') || f.name.toLowerCase().endsWith('.htm'))
                    || files[0];
 
-      let html = entryFile.content;
+      let html = entryFile.content || '';
+      let extraStyles = '';
+      let extraScripts = '';
 
       files.forEach(file => {
         if (file.name === entryFile.name) return;
-        const escapedName = file.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-        // 1. 自動替換 <link rel="stylesheet" href="xxx.css"> 為內聯 <style>
-        if (/\.css$/i.test(file.name)) {
-          const linkRegex = new RegExp(`<link[^>]*href=["'](?:\\./|/)?${escapedName}["'][^>]*>`, 'gi');
-          if (linkRegex.test(html)) {
-            html = html.replace(linkRegex, `<style>/* ${file.name} */\n${file.content}\n</style>`);
-          } else {
-            // 若 HTML 忘了寫 <link>，自動幫它注入到 </head> 前
-            html = html.includes('</head>') 
-              ? html.replace('</head>', `<style>/* ${file.name} */\n${file.content}\n</style></head>`)
-              : `<style>${file.content}</style>` + html;
-          }
-        }
-        // 2. 自動替換 <script src="xxx.js"></script> 為內聯 <script>
-        else if (/\.js$/i.test(file.name)) {
-          const scriptRegex = new RegExp(`<script[^>]*src=["'](?:\\./|/)?${escapedName}["'][^>]*>\\s*<\\/script>`, 'gi');
-          if (scriptRegex.test(html)) {
-            html = html.replace(scriptRegex, `<script>/* ${file.name} */\n${file.content}\n<\/script>`);
-          } else {
-            // 若 HTML 忘了寫 <script src=...>，自動注入到 </body> 前
-            html = html.includes('</body>')
-              ? html.replace('</body>', `<script>/* ${file.name} */\n${file.content}\n<\/script></body>`)
-              : html + `<script>${file.content}<\/script>`;
-          }
-        }
-        // 3. 其他檔案 (如 .json, .svg, 或是次要 .html) 自動轉為 Blob URL 供相對路徑讀取
-        else {
-          const mime = /\.json$/i.test(file.name) ? 'application/json' 
-                     : /\.svg$/i.test(file.name) ? 'image/svg+xml' 
-                     : 'text/plain';
-          const blob = new Blob([file.content], { type: mime });
-          const blobUrl = URL.createObjectURL(blob);
-          const refRegex = new RegExp(`(["'])(?:\\./|/)?${escapedName}\\1`, 'g');
-          html = html.replace(refRegex, `$1${blobUrl}$1`);
+        const lower = file.name.toLowerCase();
+        if (lower.endsWith('.css')) {
+          extraStyles += '\n/* ' + file.name + ' */\n' + (file.content || '');
+        } else if (lower.endsWith('.js')) {
+          extraScripts += '\n/* ' + file.name + ' */\n' + (file.content || '');
+        } else {
+          // 其他附屬檔案轉為 Blob URL 替換路徑
+          const blob = new Blob([file.content || ''], { type: 'text/plain' });
+          const url = URL.createObjectURL(blob);
+          html = html.split('./' + file.name).join(url);
+          html = html.split(file.name).join(url);
         }
       });
+
+      const styleOpen = '<st' + 'yle>';
+      const styleClose = '</st' + 'yle>';
+      const scriptOpen = '<scr' + 'ipt>';
+      const scriptClose = '</scr' + 'ipt>';
+
+      if (extraStyles) {
+        const styleBlock = styleOpen + extraStyles + styleClose;
+        if (html.includes('</head>')) {
+          html = html.replace('</head>', styleBlock + '</head>');
+        } else {
+          html = styleBlock + html;
+        }
+      }
+
+      if (extraScripts) {
+        const scriptBlock = scriptOpen + extraScripts + scriptClose;
+        if (html.includes('</body>')) {
+          html = html.replace('</body>', scriptBlock + '</body>');
+        } else {
+          html = html + scriptBlock;
+        }
+      }
 
       return html;
     };
@@ -149,7 +151,13 @@
       return (totalBytes / 1024).toFixed(1) + ' KB';
     };
 
-    // --- 圖示元件 ---
+    const stripHtmlExt = (name) => {
+      if (name.toLowerCase().endsWith('.html')) return name.slice(0, -5);
+      if (name.toLowerCase().endsWith('.htm')) return name.slice(0, -4);
+      return name;
+    };
+
+    // --- 內建 SVG 圖示元件 ---
     const IconFolderPlus = () => (
       <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" /></svg>
     );
@@ -189,19 +197,16 @@
 
     function App() {
       const [history, setHistory] = useState([]);
-      const [activeProject, setActiveProject] = useState(null); // 正在全螢幕執行的專案
-      const [studioProject, setStudioProject] = useState(null); // 正在「專案工作區」編輯檔案的專案
+      const [activeProject, setActiveProject] = useState(null);
+      const [studioProject, setStudioProject] = useState(null);
       const [showNewProjectModal, setShowNewProjectModal] = useState(false);
       const [newProjectTitle, setNewProjectTitle] = useState('');
       const [newProjectCategory, setNewProjectCategory] = useState('預設工具箱');
 
-      // 專案內新增/編輯單一檔案的彈窗狀態
       const [showFileEditor, setShowFileEditor] = useState(false);
-      const [editingFileIndex, setEditingFileIndex] = useState(null); // null 代表新增，數字代表編輯既有檔案
+      const [editingFileIndex, setEditingFileIndex] = useState(null);
       const [fileNameInput, setFileNameInput] = useState('');
       const [fileContentInput, setFileContentInput] = useState('');
-
-      // 控制全螢幕預覽時右下角返回鍵是否收合為小圓點
       const [miniFloatingBtn, setMiniFloatingBtn] = useState(false);
 
       const quickFileInputRef = useRef(null);
@@ -216,9 +221,9 @@
         setHistory(data);
       };
 
-      // 流程 1：建立新專案資料夾，並直接進入該專案的「多檔案工作區」
+      // 步驟 1：建立專案並自動開啟第一個檔案貼上視窗
       const handleCreateProject = async () => {
-        const title = newProjectTitle.trim() || `新軟體專案 ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+        const title = newProjectTitle.trim() || ('新軟體專案 ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
         const newProj = {
           id: Date.now().toString(),
           title: title,
@@ -232,36 +237,36 @@
         setNewProjectTitle('');
         setShowNewProjectModal(false);
         setStudioProject(newProj);
-        // 自動幫使用者打開第一個檔案 (預設命名 index.html) 的貼上視窗
-        openFileModal(null, 'index.html', '');
+        setEditingFileIndex(null);
+        setFileNameInput('index.html');
+        setFileContentInput('');
+        setShowFileEditor(true);
       };
 
-      // 流程 2：在專案工作區內開啟「新增/編輯程式碼」視窗
-      const openFileModal = (index = null, defaultName = '', defaultContent = '') => {
+      // 步驟 2：開啟新增或編輯檔案彈窗
+      const openFileModal = (index = null) => {
         setEditingFileIndex(index);
-        if (index !== null && studioProject?.files[index]) {
+        if (index !== null && studioProject && studioProject.files[index]) {
           setFileNameInput(studioProject.files[index].name);
           setFileContentInput(studioProject.files[index].content);
         } else {
-          // 智慧預設檔名：若已有 index.html，第二個檔案預設建議 style.css 或 script.js
-          const existingNames = (studioProject?.files || []).map(f => f.name.toLowerCase());
-          let suggested = defaultName;
-          if (!suggested) {
-            if (!existingNames.includes('index.html')) suggested = 'index.html';
-            else if (!existingNames.includes('style.css')) suggested = 'style.css';
+          const existingNames = ((studioProject && studioProject.files) || []).map(f => f.name.toLowerCase());
+          let suggested = 'index.html';
+          if (existingNames.includes('index.html')) {
+            if (!existingNames.includes('style.css')) suggested = 'style.css';
             else if (!existingNames.includes('script.js')) suggested = 'script.js';
-            else suggested = `module-${existingNames.length + 1}.js`;
+            else suggested = 'file-' + (existingNames.length + 1) + '.js';
           }
           setFileNameInput(suggested);
-          setFileContentInput(defaultContent);
+          setFileContentInput('');
         }
         setShowFileEditor(true);
       };
 
-      // 流程 3：儲存單一檔案到專案內（完成後可繼續點新增第二個檔案）
+      // 步驟 3：儲存檔案到專案中
       const handleSaveFileInStudio = async () => {
         if (!studioProject) return;
-        const cleanName = fileNameInput.trim() || `file-${(studioProject.files?.length || 0) + 1}.html`;
+        const cleanName = fileNameInput.trim() || ('file-' + ((studioProject.files || []).length + 1) + '.html');
         const updatedFiles = [...(studioProject.files || [])];
 
         if (editingFileIndex !== null) {
@@ -285,7 +290,7 @@
         setFileContentInput('');
       };
 
-      // 在專案內直接從手機選取多個實體檔案匯入 (.html, .js, .css)
+      // 從手機匯入多個檔案至專案
       const handleImportFilesToStudio = async (e) => {
         const selectedFiles = Array.from(e.target.files || []);
         if (!selectedFiles.length || !studioProject) return;
@@ -311,7 +316,6 @@
         e.target.value = '';
       };
 
-      // 刪除專案內的某一個檔案
       const handleDeleteFileInStudio = async (idx) => {
         const updatedFiles = studioProject.files.filter((_, i) => i !== idx);
         const updatedProject = {
@@ -324,18 +328,18 @@
         setStudioProject(updatedProject);
       };
 
-      // 主畫面「單檔秒開」上傳
+      // 單檔快速上傳並開啟
       const handleQuickSingleFileUpload = (e) => {
-        const file = e.target.files?.[0];
+        const file = e.target.files && e.target.files[0];
         if (!file) return;
 
         const reader = new FileReader();
         reader.onload = async (event) => {
           const content = event.target.result;
-          const files = [{ name: file.name, content }];
+          const files = [{ name: file.name, content: content }];
           const newRecord = {
             id: Date.now().toString(),
-            title: file.name.replace(/\.html?$/i, ''),
+            title: stripHtmlExt(file.name),
             category: '單頁工具',
             files: files,
             size: calcProjectSize(files),
@@ -349,7 +353,7 @@
         reader.readAsText(file);
       };
 
-      // 從最上層紀錄清單點擊開啟執行軟體
+      // 從紀錄清單點擊直接執行
       const openProjectFromHistory = async (item) => {
         const updated = { ...item, lastOpened: Date.now() };
         await saveRecordToDB(updated);
@@ -358,7 +362,6 @@
         setActiveProject(updated);
       };
 
-      // 刪除整個專案紀錄
       const handleDeleteProject = async (e, id) => {
         e.stopPropagation();
         await deleteRecordFromDB(id);
@@ -367,16 +370,15 @@
 
       return (
         <div className="relative w-full h-full overflow-hidden bg-[#050508] select-none font-sans">
-          {/* iOS 27 空間動態極光背景 */}
+          {/* iOS 27 空間極光背景 */}
           <div className="absolute -top-32 -left-32 w-96 h-96 bg-blue-600/30 rounded-full blur-[120px] pointer-events-none animate-pulse" />
           <div className="absolute top-1/3 -right-32 w-96 h-96 bg-purple-600/25 rounded-full blur-[130px] pointer-events-none" />
           <div className="absolute -bottom-32 left-1/4 w-96 h-96 bg-cyan-500/20 rounded-full blur-[110px] pointer-events-none" />
 
-          {/* 隱藏的檔案上傳器 */}
           <input ref={quickFileInputRef} type="file" accept=".html,.htm" onChange={handleQuickSingleFileUpload} className="hidden" />
           <input ref={projectFileInputRef} type="file" multiple accept=".html,.htm,.css,.js,.json,.svg" onChange={handleImportFilesToStudio} className="hidden" />
 
-          {/* ==================== 畫面 A：最上層主畫面清單 ==================== */}
+          {/* 主畫面清單 */}
           {!studioProject && (
             <div className="relative z-10 flex flex-col h-full pt-5 pb-28 px-5 max-w-md mx-auto">
               <header className="mb-5 flex items-center justify-between">
@@ -385,33 +387,32 @@
                     <IconSparkles />
                     <span>iOS 27 Spatial Studio</span>
                   </div>
-                  <h1 className="text-2xl font-bold tracking-tight bg-gradient-to-br from-white via-white/90 to-white/50 bg-clip-text text-transparent">
+                  <h1 className="text-2xl font-bold tracking-tight text-white">
                     HTML 免部署工作站
                   </h1>
                 </div>
-                <div className="px-3 py-1.5 rounded-full bg-white/5 backdrop-blur-xl border border-white/15 text-xs text-white/70">
+                <div className="px-3 py-1.5 rounded-full bg-white/10 backdrop-blur-xl border border-white/15 text-xs text-white/80">
                   {history.length} 個軟體
                 </div>
               </header>
 
-              {/* 頂部雙功能大卡片 */}
               <div className="grid grid-cols-2 gap-3.5 mb-6">
                 <button
                   onClick={() => setShowNewProjectModal(true)}
-                  className="group relative flex flex-col justify-between p-4 h-28 rounded-[28px] bg-gradient-to-br from-blue-500/20 to-purple-600/15 hover:from-blue-500/30 active:scale-95 transition-all duration-300 backdrop-blur-2xl border border-blue-400/30 shadow-[0_8px_32px_rgba(0,0,0,0.4)] text-left"
+                  className="group relative flex flex-col justify-between p-4 h-28 rounded-[28px] bg-gradient-to-br from-blue-500/25 to-purple-600/20 active:scale-95 transition-all backdrop-blur-2xl border border-blue-400/35 shadow-lg text-left"
                 >
-                  <div className="w-10 h-10 rounded-2xl bg-blue-500/25 border border-blue-400/40 flex items-center justify-center text-blue-300">
+                  <div className="w-10 h-10 rounded-2xl bg-blue-500/30 border border-blue-400/40 flex items-center justify-center text-blue-300">
                     <IconFolderPlus />
                   </div>
                   <div>
-                    <div className="font-semibold text-sm text-white">新建多檔專案</div>
-                    <div className="text-[11px] text-blue-200/60">貼上多個程式碼免部署</div>
+                    <div className="font-semibold text-sm text-white">新增專案</div>
+                    <div className="text-[11px] text-blue-200/70">貼上多檔程式碼免部署</div>
                   </div>
                 </button>
 
                 <button
-                  onClick={() => quickFileInputRef.current?.click()}
-                  className="group relative flex flex-col justify-between p-4 h-28 rounded-[28px] bg-white/[0.07] hover:bg-white/[0.12] active:scale-95 transition-all duration-300 backdrop-blur-2xl border border-white/15 shadow-[0_8px_32px_rgba(0,0,0,0.4)] text-left"
+                  onClick={() => quickFileInputRef.current && quickFileInputRef.current.click()}
+                  className="group relative flex flex-col justify-between p-4 h-28 rounded-[28px] bg-white/[0.08] active:scale-95 transition-all backdrop-blur-2xl border border-white/15 shadow-lg text-left"
                 >
                   <div className="w-10 h-10 rounded-2xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center text-emerald-300">
                     <IconFolder />
@@ -426,23 +427,23 @@
               <div className="flex items-center justify-between mb-3 px-1">
                 <div className="flex items-center gap-1.5 text-xs font-semibold text-white/60 tracking-wider uppercase">
                   <IconClock />
-                  <span>已儲存的軟體與專案紀錄 (點擊直接執行)</span>
+                  <span>軟體與專案紀錄清單 (點擊直接執行)</span>
                 </div>
               </div>
 
               <div className="flex-1 overflow-y-auto space-y-3 pr-1 pb-6">
                 {history.length === 0 ? (
-                  <div className="h-52 rounded-[32px] bg-white/[0.03] backdrop-blur-xl border border-white/10 flex flex-col items-center justify-center text-center p-6">
-                    <IconCode className="w-10 h-10 text-white/20 mb-3" />
-                    <p className="text-sm text-white/60 font-medium">尚無軟體紀錄</p>
-                    <p className="text-xs text-white/35 mt-1">點擊上方「新建多檔專案」，把程式碼逐一貼上存檔，即可在此秒開使用</p>
+                  <div className="h-52 rounded-[32px] bg-white/[0.04] backdrop-blur-xl border border-white/10 flex flex-col items-center justify-center text-center p-6">
+                    <IconCode className="w-10 h-10 text-white/25 mb-3" />
+                    <p className="text-sm text-white/70 font-medium">尚無軟體紀錄</p>
+                    <p className="text-xs text-white/40 mt-1">點擊上方「新增專案」，貼上程式碼並命名存檔，後續即可在此清單直接秒開</p>
                   </div>
                 ) : (
                   history.map((item) => (
                     <div
                       key={item.id}
                       onClick={() => openProjectFromHistory(item)}
-                      className="group relative flex items-center justify-between p-4 rounded-[26px] bg-white/[0.06] hover:bg-white/[0.11] active:scale-[0.98] transition-all duration-200 backdrop-blur-2xl border border-white/15 shadow-lg cursor-pointer"
+                      className="group relative flex items-center justify-between p-4 rounded-[26px] bg-white/[0.07] hover:bg-white/[0.12] active:scale-[0.98] transition-all backdrop-blur-2xl border border-white/15 shadow-lg cursor-pointer"
                     >
                       <div className="flex items-center gap-3.5 min-w-0 pr-2">
                         <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-blue-500/25 to-purple-500/25 border border-white/15 flex items-center justify-center text-blue-300 shrink-0">
@@ -450,34 +451,31 @@
                         </div>
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
-                            <h3 className="font-semibold text-sm text-white/95 truncate">{item.title}</h3>
+                            <h3 className="font-semibold text-sm text-white truncate">{item.title}</h3>
                             <span className="px-2 py-0.5 rounded-full bg-blue-500/20 border border-blue-400/30 text-[10px] text-blue-300 shrink-0">
-                              {(item.files || []).length} 個檔案
+                              {(item.files || []).length} 檔
                             </span>
                           </div>
-                          <div className="flex items-center gap-2 text-[11px] text-white/45 mt-1">
+                          <div className="flex items-center gap-2 text-[11px] text-white/50 mt-1">
                             <span>{item.category || '預設工具箱'}</span>
                             <span>•</span>
                             <span>{item.size}</span>
-                            <span>•</span>
-                            <span>{new Date(item.lastOpened).toLocaleString('zh-TW', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
                           </div>
                         </div>
                       </div>
 
                       <div className="flex items-center gap-1.5 shrink-0">
-                        {/* 點擊鉛筆可進入專案工作區新增第 2、第 3 個檔案或修改代碼 */}
                         <button
                           onClick={(e) => { e.stopPropagation(); setStudioProject(item); }}
-                          className="p-2.5 rounded-full bg-white/5 hover:bg-blue-500/20 text-white/60 hover:text-blue-300 active:scale-90 transition-all"
-                          title="編輯專案檔案"
+                          className="p-2.5 rounded-full bg-white/10 hover:bg-blue-500/30 text-white/80 active:scale-90 transition-all"
+                          title="管理專案檔案"
                         >
                           <IconEdit />
                         </button>
                         <button
                           onClick={(e) => handleDeleteProject(e, item.id)}
                           className="p-2.5 rounded-full bg-white/5 hover:bg-red-500/20 text-white/40 hover:text-red-400 active:scale-90 transition-all"
-                          title="刪除專案"
+                          title="刪除"
                         >
                           <IconTrash />
                         </button>
@@ -489,47 +487,46 @@
             </div>
           )}
 
-          {/* ==================== 畫面 B：多檔案專案工作區 (Project Studio) ==================== */}
+          {/* 專案多檔案管理工作區 */}
           {studioProject && (
             <div className="relative z-20 flex flex-col h-full pt-5 pb-28 px-5 max-w-md mx-auto animate-fadeIn">
               <div className="flex items-center justify-between mb-5">
                 <button
                   onClick={() => setStudioProject(null)}
-                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-white/10 hover:bg-white/15 active:scale-95 text-xs font-semibold text-white border border-white/15"
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-white/10 active:scale-95 text-xs font-semibold text-white border border-white/15"
                 >
                   <IconChevronLeft />
-                  <span>完成並返回清單</span>
+                  <span>完成並返回最上層</span>
                 </button>
 
                 <button
                   onClick={() => openProjectFromHistory(studioProject)}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-full bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-xs font-semibold text-white shadow-lg shadow-emerald-500/25"
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-full bg-emerald-500 active:scale-95 text-xs font-semibold text-white shadow-lg"
                 >
                   <IconPlay />
-                  <span>立即執行此軟體</span>
+                  <span>立即開啟執行</span>
                 </button>
               </div>
 
-              <div className="p-4 rounded-[28px] bg-white/[0.06] border border-white/15 backdrop-blur-2xl mb-5">
-                <div className="text-[11px] text-blue-300/80 font-medium mb-0.5">儲存位置：{studioProject.category || '預設工具箱'}</div>
+              <div className="p-4 rounded-[28px] bg-white/[0.07] border border-white/15 backdrop-blur-2xl mb-5">
+                <div className="text-[11px] text-blue-300 font-medium mb-0.5">儲存位置：{studioProject.category || '預設工具箱'}</div>
                 <h2 className="text-xl font-bold text-white truncate">{studioProject.title}</h2>
-                <p className="text-xs text-white/50 mt-1">
-                  可在此專案內連續新增多個檔案（例如 <code className="text-blue-300">index.html</code>、<code className="text-purple-300">style.css</code>、<code className="text-amber-300">script.js</code>），系統會在執行時自動將它們連結打包。
+                <p className="text-xs text-white/60 mt-1">
+                  請依序點擊「新增程式碼檔案」貼上並命名（如 index.html、style.css、script.js），完成後返回最上層即可隨時開啟使用。
                 </p>
               </div>
 
-              {/* 新增檔案按鈕列 */}
               <div className="grid grid-cols-2 gap-3 mb-5">
                 <button
                   onClick={() => openFileModal(null)}
-                  className="flex items-center justify-center gap-2 py-3.5 px-4 rounded-2xl bg-blue-500 hover:bg-blue-400 active:scale-95 text-white font-semibold text-xs shadow-lg shadow-blue-500/25 transition-all"
+                  className="flex items-center justify-center gap-2 py-3.5 px-4 rounded-2xl bg-blue-500 active:scale-95 text-white font-semibold text-xs shadow-lg"
                 >
                   <IconPlus />
                   <span>新增程式碼檔案</span>
                 </button>
                 <button
-                  onClick={() => projectFileInputRef.current?.click()}
-                  className="flex items-center justify-center gap-2 py-3.5 px-4 rounded-2xl bg-white/10 hover:bg-white/15 active:scale-95 text-white font-semibold text-xs border border-white/15 transition-all"
+                  onClick={() => projectFileInputRef.current && projectFileInputRef.current.click()}
+                  className="flex items-center justify-center gap-2 py-3.5 px-4 rounded-2xl bg-white/10 active:scale-95 text-white font-semibold text-xs border border-white/15"
                 >
                   <IconFolder />
                   <span>從手機匯入檔案</span>
@@ -537,21 +534,21 @@
               </div>
 
               <div className="text-xs font-semibold text-white/60 tracking-wider uppercase mb-2.5 px-1">
-                專案內的檔案清單 ({(studioProject.files || []).length})
+                已建立的專案檔案 ({(studioProject.files || []).length})
               </div>
 
               <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 pb-6">
                 {(studioProject.files || []).length === 0 ? (
-                  <div className="h-44 rounded-[28px] bg-white/[0.03] border border-dashed border-white/15 flex flex-col items-center justify-center text-center p-5">
-                    <p className="text-sm text-white/60 font-medium">尚未建立任何檔案</p>
-                    <p className="text-xs text-white/35 mt-1">請點上方「＋ 新增程式碼檔案」貼上第 1 個檔案</p>
+                  <div className="h-40 rounded-[28px] bg-white/[0.03] border border-dashed border-white/15 flex flex-col items-center justify-center text-center p-5">
+                    <p className="text-sm text-white/60 font-medium">尚未新增檔案</p>
+                    <p className="text-xs text-white/40 mt-1">請點上方「＋ 新增程式碼檔案」貼上第一個檔案</p>
                   </div>
                 ) : (
                   studioProject.files.map((file, idx) => (
                     <div
                       key={idx}
                       onClick={() => openFileModal(idx)}
-                      className="flex items-center justify-between p-3.5 rounded-2xl bg-white/[0.07] hover:bg-white/[0.12] border border-white/15 cursor-pointer transition-all"
+                      className="flex items-center justify-between p-3.5 rounded-2xl bg-white/[0.08] border border-white/15 cursor-pointer"
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <div className="w-9 h-9 rounded-xl bg-blue-500/20 border border-blue-400/30 flex items-center justify-center text-blue-300 shrink-0">
@@ -559,14 +556,14 @@
                         </div>
                         <div className="min-w-0">
                           <div className="text-sm font-semibold text-white truncate">{file.name}</div>
-                          <div className="text-[11px] text-white/45">
-                            {(new Blob([file.content || '']).size / 1024).toFixed(1)} KB • 點擊可修改代碼
+                          <div className="text-[11px] text-white/50">
+                            {(new Blob([file.content || '']).size / 1024).toFixed(1)} KB • 點擊編輯內容
                           </div>
                         </div>
                       </div>
                       <button
                         onClick={(e) => { e.stopPropagation(); handleDeleteFileInStudio(idx); }}
-                        className="p-2 rounded-full bg-white/5 hover:bg-red-500/20 text-white/40 hover:text-red-400"
+                        className="p-2 rounded-full bg-white/5 text-white/40 hover:text-red-400"
                       >
                         <IconTrash />
                       </button>
@@ -580,56 +577,56 @@
           {/* 底部懸浮空間膠囊列 */}
           {!studioProject && (
             <div className="fixed bottom-6 inset-x-0 z-20 flex justify-center pointer-events-none">
-              <div className="pointer-events-auto flex items-center gap-2 px-3 py-2 rounded-full bg-white/10 backdrop-blur-3xl border border-white/20 shadow-[0_10px_40px_rgba(0,0,0,0.6)]">
+              <div className="pointer-events-auto flex items-center gap-2 px-3 py-2 rounded-full bg-white/10 backdrop-blur-3xl border border-white/20 shadow-2xl">
                 <button
                   onClick={() => setShowNewProjectModal(true)}
-                  className="flex items-center gap-2 px-5 py-2.5 rounded-full bg-blue-500 hover:bg-blue-400 active:scale-95 text-white text-xs font-semibold shadow-lg shadow-blue-500/30 transition-all"
+                  className="flex items-center gap-2 px-5 py-2.5 rounded-full bg-blue-500 active:scale-95 text-white text-xs font-semibold shadow-lg"
                 >
                   <IconPlus />
                   <span>新增專案</span>
                 </button>
                 <button
-                  onClick={() => quickFileInputRef.current?.click()}
-                  className="px-4 py-2.5 rounded-full text-white/80 hover:text-white hover:bg-white/10 active:scale-95 text-xs font-medium transition-all"
+                  onClick={() => quickFileInputRef.current && quickFileInputRef.current.click()}
+                  className="px-4 py-2.5 rounded-full text-white/85 active:scale-95 text-xs font-medium"
                 >
-                  選取檔案
+                  開啟單檔
                 </button>
               </div>
             </div>
           )}
 
-          {/* ==================== 彈窗 1：新建專案與選擇儲存分類位置 ==================== */}
+          {/* 彈窗 1：建立新專案與選定位置 */}
           {showNewProjectModal && (
-            <div className="fixed inset-0 z-40 flex items-end sm:items-center justify-center bg-black/65 backdrop-blur-md p-4 animate-fadeIn">
-              <div className="w-full max-w-md rounded-[36px] bg-[#12131a]/95 backdrop-blur-3xl border border-white/20 p-6 shadow-2xl mb-2">
+            <div className="fixed inset-0 z-40 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-md p-4 animate-fadeIn">
+              <div className="w-full max-w-md rounded-[36px] bg-[#14151f] border border-white/20 p-6 shadow-2xl mb-2">
                 <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-lg font-bold text-white">步驟 1：建立新專案</h2>
+                  <h2 className="text-lg font-bold text-white">步驟 1：設定專案位置與名稱</h2>
                   <button onClick={() => setShowNewProjectModal(false)} className="p-2 rounded-full bg-white/10 text-white/70">
                     <IconX />
                   </button>
                 </div>
 
-                <label className="block text-xs text-white/60 mb-1.5 ml-1">選擇專案儲存分類位置</label>
+                <label className="block text-xs text-white/60 mb-1.5 ml-1">選擇儲存分類位置</label>
                 <div className="grid grid-cols-3 gap-2 mb-4">
                   {['預設工具箱', '工程速算', '3D 與模型'].map(cat => (
                     <button
                       key={cat}
                       onClick={() => setNewProjectCategory(cat)}
-                      className={`py-2 px-3 rounded-xl text-xs font-medium border transition-all ${
+                      className={'py-2 px-3 rounded-xl text-xs font-medium border transition-all ' + (
                         newProjectCategory === cat 
                           ? 'bg-blue-500/30 border-blue-400 text-white' 
                           : 'bg-white/5 border-white/10 text-white/50'
-                      }`}
+                      )}
                     >
                       {cat}
                     </button>
                   ))}
                 </div>
 
-                <label className="block text-xs text-white/60 mb-1.5 ml-1">軟體 / 專案名稱</label>
+                <label className="block text-xs text-white/60 mb-1.5 ml-1">專案軟體名稱</label>
                 <input
                   type="text"
-                  placeholder="例如：散熱風扇阻抗計算器"
+                  placeholder="輸入軟體名稱 (如：3D Viewer 工具)"
                   value={newProjectTitle}
                   onChange={(e) => setNewProjectTitle(e.target.value)}
                   className="w-full mb-5 px-4 py-3 rounded-2xl bg-white/5 border border-white/15 text-sm text-white placeholder-white/30 focus:outline-none focus:border-blue-400"
@@ -637,35 +634,34 @@
 
                 <button
                   onClick={handleCreateProject}
-                  className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-blue-500 to-indigo-500 text-white font-semibold text-sm shadow-lg shadow-blue-500/25 active:scale-[0.98] transition-transform"
+                  className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-blue-500 to-indigo-500 text-white font-semibold text-sm shadow-lg active:scale-95 transition-transform"
                 >
-                  下一步：貼上程式碼檔案
+                  下一步：新增第 1 個程式碼檔案
                 </button>
               </div>
             </div>
           )}
 
-          {/* ==================== 彈窗 2：貼上程式碼與命名檔案 ==================== */}
+          {/* 彈窗 2：貼上程式碼並命名存檔 */}
           {showFileEditor && (
-            <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-md p-4 animate-fadeIn">
-              <div className="w-full max-w-md rounded-[36px] bg-[#12131a]/95 backdrop-blur-3xl border border-white/20 p-6 shadow-2xl mb-2">
+            <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-fadeIn">
+              <div className="w-full max-w-md rounded-[36px] bg-[#14151f] border border-white/20 p-6 shadow-2xl mb-2">
                 <div className="flex items-center justify-between mb-3">
                   <h2 className="text-base font-bold text-white">
-                    {editingFileIndex !== null ? '編輯檔案內容' : `新增第 ${(studioProject?.files?.length || 0) + 1} 個檔案`}
+                    {editingFileIndex !== null ? '編輯檔案內容' : ('新增第 ' + (((studioProject && studioProject.files) || []).length + 1) + ' 個檔案')}
                   </h2>
                   <button onClick={() => setShowFileEditor(false)} className="p-2 rounded-full bg-white/10 text-white/70">
                     <IconX />
                   </button>
                 </div>
 
-                {/* 快速檔名按鈕 */}
                 <div className="flex items-center gap-1.5 mb-2 overflow-x-auto pb-1">
-                  <span className="text-[11px] text-white/40 shrink-0">快速命名：</span>
+                  <span className="text-[11px] text-white/50 shrink-0">點選快速命名：</span>
                   {['index.html', 'style.css', 'script.js', 'data.json'].map(preset => (
                     <button
                       key={preset}
                       onClick={() => setFileNameInput(preset)}
-                      className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/15 border border-white/10 text-[11px] text-blue-300 shrink-0"
+                      className="px-2.5 py-1 rounded-lg bg-white/10 border border-white/15 text-[11px] text-blue-300 shrink-0"
                     >
                       {preset}
                     </button>
@@ -674,15 +670,15 @@
 
                 <input
                   type="text"
-                  placeholder="輸入檔案名稱 (如 index.html 或 script.js)"
+                  placeholder="輸入檔案名稱 (例如 index.html)"
                   value={fileNameInput}
                   onChange={(e) => setFileNameInput(e.target.value)}
                   className="w-full mb-3 px-4 py-2.5 rounded-2xl bg-white/5 border border-white/15 text-sm font-mono text-white placeholder-white/30 focus:outline-none focus:border-blue-400"
                 />
 
                 <textarea
-                  rows={9}
-                  placeholder="在此貼上程式碼..."
+                  rows={8}
+                  placeholder="請在此貼上程式碼..."
                   value={fileContentInput}
                   onChange={(e) => setFileContentInput(e.target.value)}
                   className="w-full mb-4 p-3.5 rounded-2xl bg-white/5 border border-white/15 text-xs font-mono text-white placeholder-white/30 focus:outline-none focus:border-blue-400 resize-none"
@@ -690,15 +686,15 @@
 
                 <button
                   onClick={handleSaveFileInStudio}
-                  className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-blue-500 to-indigo-500 text-white font-semibold text-sm shadow-lg shadow-blue-500/25 active:scale-[0.98] transition-transform"
+                  className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-blue-500 to-indigo-500 text-white font-semibold text-sm shadow-lg active:scale-95 transition-transform"
                 >
-                  儲存此檔案 (可繼續新增下一個檔案)
+                  儲存並命名檔案 (完成後可繼續新增第 2 檔)
                 </button>
               </div>
             </div>
           )}
 
-          {/* ==================== 畫面 C：全螢幕執行檢視器 ==================== */}
+          {/* 全螢幕執行畫面 */}
           {activeProject && (
             <div className="fixed inset-0 z-50 bg-[#050508] flex flex-col animate-fadeIn">
               <iframe
@@ -708,21 +704,20 @@
                 className="w-full h-full border-0 bg-white"
               />
 
-              {/* 右下角可收合懸浮控制膠囊（不遮擋頂部與左上角任何按鈕） */}
+              {/* 右下角懸浮返回與編輯控制列 */}
               <div className="fixed bottom-5 right-4 z-50 flex items-center gap-1.5">
                 {miniFloatingBtn ? (
                   <button
                     onClick={() => setMiniFloatingBtn(false)}
-                    className="w-10 h-10 rounded-full bg-black/50 hover:bg-black/80 text-white/80 backdrop-blur-xl border border-white/20 shadow-lg flex items-center justify-center text-xs font-bold"
-                    title="展開選單"
+                    className="w-10 h-10 rounded-full bg-black/60 text-white backdrop-blur-xl border border-white/25 shadow-lg flex items-center justify-center text-xs font-bold"
                   >
                     •••
                   </button>
                 ) : (
-                  <div className="flex items-center gap-1.5 p-1.5 rounded-full bg-black/75 backdrop-blur-2xl border border-white/25 shadow-[0_8px_30px_rgba(0,0,0,0.6)]">
+                  <div className="flex items-center gap-1.5 p-1.5 rounded-full bg-black/80 backdrop-blur-2xl border border-white/25 shadow-2xl">
                     <button
                       onClick={() => setActiveProject(null)}
-                      className="flex items-center gap-1 pl-2.5 pr-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 active:scale-95 text-white text-xs font-semibold transition-all"
+                      className="flex items-center gap-1 pl-2.5 pr-3 py-1.5 rounded-full bg-white/15 text-white text-xs font-semibold"
                     >
                       <IconChevronLeft />
                       <span>返回清單</span>
@@ -733,14 +728,13 @@
                         setActiveProject(null);
                         setStudioProject(proj);
                       }}
-                      className="px-3 py-1.5 rounded-full bg-blue-500/80 hover:bg-blue-500 text-white text-xs font-semibold transition-all"
+                      className="px-3 py-1.5 rounded-full bg-blue-500 text-white text-xs font-semibold"
                     >
-                      編輯檔案
+                      專案檔案
                     </button>
                     <button
                       onClick={() => setMiniFloatingBtn(true)}
-                      className="p-1.5 rounded-full text-white/50 hover:text-white"
-                      title="縮小懸浮鈕"
+                      className="p-1.5 rounded-full text-white/60"
                     >
                       <IconX />
                     </button>
@@ -758,3 +752,4 @@
   </script>
 </body>
 </html>
+
